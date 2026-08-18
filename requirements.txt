@@ -1,0 +1,27 @@
+# Core
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+python-multipart==0.0.20
+
+# Database
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+pgvector==0.3.6
+alembic==1.14.1
+
+# AI / LLM
+google-genai>=2.18.0
+groq==0.15.0
+
+# HTTP Client
+httpx==0.28.1
+
+# Document Processing
+pypdf>=6.16.0
+# tiktoken removed — using char-based token estimation (compatible with Python 3.14)
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.25.0
