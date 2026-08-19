@@ -19,8 +19,19 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
+def _get_async_db_url(raw_url: str) -> str:
+    """Ensure standard postgresql:// or postgres:// URLs use the asyncpg async driver."""
+    if raw_url.startswith("postgresql://"):
+        return raw_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if raw_url.startswith("postgres://"):
+        return raw_url.replace("postgres://", "postgresql+asyncpg://", 1)
+    return raw_url
+
+
+db_url = _get_async_db_url(settings.database_url)
+
 engine = create_async_engine(
-    settings.database_url,
+    db_url,
     echo=(settings.environment == "development"),
     pool_size=5,
     max_overflow=10,
