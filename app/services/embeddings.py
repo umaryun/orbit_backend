@@ -44,6 +44,7 @@ async def generate_embedding(
             contents=text,
             config=types.EmbedContentConfig(
                 task_type=task_type,
+                output_dimensionality=settings.embedding_dimensions,
             ),
         )
         embedding = result.embeddings[0].values
@@ -77,6 +78,7 @@ async def generate_embeddings(
             contents=texts,
             config=types.EmbedContentConfig(
                 task_type=task_type,
+                output_dimensionality=settings.embedding_dimensions,
             ),
         )
         embeddings = [list(e.values) for e in result.embeddings]

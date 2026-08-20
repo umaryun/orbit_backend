@@ -22,6 +22,7 @@ from app.db.models import (
     Project,
     ProjectKnowledge,
     Task,
+    User,
 )
 from app.services.embeddings import generate_embedding
 
@@ -215,6 +216,34 @@ async def assemble_full_context(
 
     # Build the injected context block
     context_parts = []
+
+    # Fetch user for name & timezone info
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
+
+    now_utc = datetime.now(timezone.utc)
+    user_tz_str = user.timezone if user and user.timezone else "UTC"
+
+    try:
+        import zoneinfo
+        user_tz = zoneinfo.ZoneInfo(user_tz_str)
+        now_local = now_utc.astimezone(user_tz)
+        local_time_str = now_local.strftime("%Y-%m-%d %H:%M:%S %Z (UTC%z)")
+    except Exception:
+        local_time_str = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    default_name = user.first_name if user and user.first_name else "Unknown"
+    preferred_name = user.preferred_name if user and user.preferred_name else "Not set"
+    active_name = user.preferred_name if (user and user.preferred_name) else (user.first_name if (user and user.first_name) else "there")
+
+    user_info_lines = [
+        f"Default Name (from WhatsApp): {default_name}",
+        f"Preferred Name: {preferred_name}",
+        f"Active Name to Address User: {active_name}",
+        f"Current UTC Time: {now_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"User Local Time: {local_time_str}",
+    ]
+    context_parts.append("=== USER INFO & CURRENT TIME ===\n" + "\n".join(user_info_lines))
 
     if relational and relational != "No active projects.":
         context_parts.append(f"=== ACTIVE PROJECTS & TASKS ===\n{relational}")

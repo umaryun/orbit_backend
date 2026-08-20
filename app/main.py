@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.webhook import router as webhook_router
 from app.config import get_settings
 from app.db.session import dispose_engine, init_db
+from app.services.reminders import cancel_active_timers, load_and_start_reminders
 from app.services.whatsapp import close_client
 
 settings = get_settings()
@@ -38,11 +39,14 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Orbit Backend starting up (env: %s)", settings.environment)
     await init_db()
     logger.info("✅ Database initialized")
+    await load_and_start_reminders()
+    logger.info("✅ Reminders service initialized")
 
     yield
 
     # Shutdown
     logger.info("🛑 Orbit Backend shutting down")
+    cancel_active_timers()
     await close_client()
     await dispose_engine()
     logger.info("✅ Cleanup complete")
