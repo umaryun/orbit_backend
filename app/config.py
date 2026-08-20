@@ -29,8 +29,8 @@ class Settings(BaseSettings):
 
     # ── Gemini (LLM + Embeddings) ──────────────────────────────────────
     gemini_api_key: str
-    gemini_llm_model: str = "gemini-2.0-flash"
-    gemini_embedding_model: str = "models/text-embedding-004"
+    gemini_llm_model: str = "gemini-3-flash"
+    gemini_embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 768
 
     # ── Groq (Whisper) ─────────────────────────────────────────────────
