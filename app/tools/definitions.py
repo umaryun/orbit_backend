@@ -30,8 +30,11 @@ from app.db.models import (
     ProjectProfile,
     Task,
     ProjectKnowledge,
+    Reminder,
+    User,
 )
 from app.services.embeddings import generate_embedding
+from app.services.reminders import schedule_reminder_timer
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +87,19 @@ class ListProjectsArgs(BaseModel):
 class QueryProjectKnowledgeArgs(BaseModel):
     project_id: str = Field(description="UUID of the project to search")
     search_query: str = Field(description="Natural language search query")
+
+
+class SetReminderArgs(BaseModel):
+    message: str = Field(description="What the user wants to be reminded of")
+    remind_at: str = Field(
+        description="Exact date and time to send the reminder in ISO 8601 format (e.g. '2026-08-20T22:30:00Z' or '2026-08-20T22:30:00+01:00')"
+    )
+
+
+class SetPreferredNameArgs(BaseModel):
+    preferred_name: str = Field(
+        description="The preferred name or nickname the user wants the assistant to call them"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -209,6 +225,38 @@ TOOL_DECLARATIONS = [
                 "search_query": {"type": "string", "description": "Natural language search query"},
             },
             "required": ["project_id", "search_query"],
+        },
+    },
+    {
+        "name": "set_reminder",
+        "description": "Schedule a reminder message to be sent proactively to the user at a specified time. Use when the user asks to be reminded of something at a specific time or in X minutes/hours.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The reminder text to send to the user",
+                },
+                "remind_at": {
+                    "type": "string",
+                    "description": "The exact ISO 8601 datetime to trigger the reminder (e.g. '2026-08-20T22:30:00+01:00')",
+                },
+            },
+            "required": ["message", "remind_at"],
+        },
+    },
+    {
+        "name": "set_preferred_name",
+        "description": "Save or update the user's preferred name or nickname. Use when the user tells you what name they prefer to be called.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "preferred_name": {
+                    "type": "string",
+                    "description": "The preferred name or nickname",
+                },
+            },
+            "required": ["preferred_name"],
         },
     },
 ]
@@ -475,6 +523,75 @@ async def handle_query_project_knowledge(
     }
 
 
+async def handle_set_reminder(
+    args: dict, user_id: uuid.UUID, db: AsyncSession
+) -> dict[str, Any]:
+    """Schedule a reminder and register its in-memory timer."""
+    validated = SetReminderArgs(**args)
+    try:
+        remind_at = datetime.fromisoformat(validated.remind_at.replace("Z", "+00:00"))
+        if remind_at.tzinfo is None:
+            remind_at = remind_at.replace(tzinfo=timezone.utc)
+    except Exception:
+        return {
+            "status": "error",
+            "message": f"Invalid datetime format: {validated.remind_at}. Please provide a valid ISO 8601 string.",
+        }
+
+    # Fetch user phone number for scheduling delivery
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        return {"status": "error", "message": "User not found."}
+
+    reminder = Reminder(
+        user_id=user_id,
+        message=validated.message,
+        remind_at=remind_at,
+        status="pending",
+    )
+    db.add(reminder)
+    await db.commit()
+    await db.refresh(reminder)
+
+    # Register in-memory timer
+    schedule_reminder_timer(
+        reminder_id=reminder.id,
+        user_id=user_id,
+        phone_number=user.phone_number,
+        message=validated.message,
+        remind_at=remind_at,
+    )
+
+    return {
+        "status": "scheduled",
+        "reminder_id": str(reminder.id),
+        "message": validated.message,
+        "remind_at": remind_at.isoformat(),
+        "confirmation": f"Reminder set for {remind_at.isoformat()}: '{validated.message}'",
+    }
+
+
+async def handle_set_preferred_name(
+    args: dict, user_id: uuid.UUID, db: AsyncSession
+) -> dict[str, Any]:
+    """Update user's preferred name in database."""
+    validated = SetPreferredNameArgs(**args)
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        return {"status": "error", "message": "User not found."}
+
+    user.preferred_name = validated.preferred_name.strip()
+    await db.commit()
+
+    return {
+        "status": "updated",
+        "preferred_name": user.preferred_name,
+        "message": f"Preferred name updated to '{user.preferred_name}'.",
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Tool Router — maps tool names to handler functions
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -487,6 +604,8 @@ TOOL_HANDLERS = {
     "list_tasks": handle_list_tasks,
     "list_projects": handle_list_projects,
     "query_project_knowledge": handle_query_project_knowledge,
+    "set_reminder": handle_set_reminder,
+    "set_preferred_name": handle_set_preferred_name,
 }
 
 
