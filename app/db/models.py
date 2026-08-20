@@ -73,6 +73,12 @@ PROJECT_STATUS = Enum(
     create_constraint=True,
 )
 
+REMINDER_STATUS = Enum(
+    "pending", "delivered", "cancelled", "failed",
+    name="reminder_status_enum",
+    create_constraint=True,
+)
+
 
 # ── Users ──────────────────────────────────────────────────────────────────────
 
@@ -87,6 +93,7 @@ class User(Base):
         String(20), unique=True, nullable=False, index=True
     )
     first_name: Mapped[str | None] = mapped_column(String(100))
+    preferred_name: Mapped[str | None] = mapped_column(String(100))
     timezone: Mapped[str | None] = mapped_column(String(50), default="UTC")
     onboarding_state: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(
@@ -96,6 +103,9 @@ class User(Base):
     # Relationships
     projects: Mapped[list["Project"]] = relationship(back_populates="user", lazy="selectin")
     conversation_logs: Mapped[list["ConversationLog"]] = relationship(
+        back_populates="user", lazy="selectin"
+    )
+    reminders: Mapped[list["Reminder"]] = relationship(
         back_populates="user", lazy="selectin"
     )
 
@@ -257,3 +267,34 @@ class ConversationLog(Base):
     __table_args__ = (
         Index("ix_convlog_user_created", "user_id", "created_at"),
     )
+
+
+# ── Reminders ─────────────────────────────────────────────────────────────────
+
+
+class Reminder(Base):
+    __tablename__ = "reminders"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_new_uuid
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    remind_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(
+        REMINDER_STATUS, default="pending", server_default="pending"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+
+    # Relationships
+    user: Mapped["User"] = relationship(back_populates="reminders")
+
+    __table_args__ = (
+        Index("ix_reminders_status_remind_at", "status", "remind_at"),
+        Index("ix_reminders_user_id", "user_id"),
+    )
+
