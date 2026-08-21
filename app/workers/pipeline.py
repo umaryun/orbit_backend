@@ -31,9 +31,9 @@ from app.services.embeddings import generate_embedding
 from app.services.passive_extractor import extract_facts
 from app.services.whatsapp import (
     download_media,
-    mark_as_read,
     send_multi_bubble,
     send_text_message,
+    send_typing_indicator,
 )
 
 logger = logging.getLogger(__name__)
@@ -219,18 +219,19 @@ async def process_incoming_message(payload: dict[str, Any]) -> None:
     message_type = msg_data["type"]
     message_id = msg_data["message_id"]
 
+    # Redact phone number in logs (show last 4 digits only)
+    phone_redacted = f"***{phone_number[-4:]}" if phone_number else "unknown"
+
     logger.info(
         "Processing message %s from %s (type: %s)",
         message_id,
-        phone_number,
+        phone_redacted,
         message_type,
     )
 
     async with async_session_factory() as db:
         try:
-            # ── Step 1: Mark as read & upsert user ──
-            asyncio.create_task(_safe_mark_read(message_id))
-
+            # ── Step 1: Upsert user ──
             user = await upsert_user(
                 phone_number, msg_data.get("contact_name"), db
             )
@@ -252,7 +253,7 @@ async def process_incoming_message(payload: dict[str, Any]) -> None:
                     filename=f"voice_{message_id}.ogg",
                 )
                 media_type = "audio"
-                logger.info("Transcribed voice note: %s...", user_text[:100])
+                logger.info("Transcribed voice note (%d chars)", len(user_text))
 
             elif message_type == "document" and msg_data["document"]:
                 doc_info = msg_data["document"]
@@ -292,16 +293,19 @@ async def process_incoming_message(payload: dict[str, Any]) -> None:
             # ── Step 3: Log user message ──
             await log_message(user.id, "user", user_text, media_type, db)
 
-            # ── Step 4: Run agent loop ──
-            response = await run_agent_loop(user.id, user_text, db)
+            # ── Step 4: Show typing indicator + mark as read ──
+            await send_typing_indicator(phone_number, message_id)
 
-            # ── Step 5: Log assistant response ──
+            # ── Step 5: Run agent loop (pass user to avoid re-query) ──
+            response = await run_agent_loop(user.id, user_text, db, user=user)
+
+            # ── Step 6: Log assistant response ──
             await log_message(user.id, "assistant", response, None, db)
 
-            # ── Step 6: Send response via multi-bubble ──
+            # ── Step 7: Send response via multi-bubble ──
             await send_multi_bubble(phone_number, response)
 
-            # ── Step 7: Fire passive extractor (non-blocking) ──
+            # ── Step 8: Fire passive extractor (non-blocking) ──
             conversation_snippet = f"User: {user_text}\nAssistant: {response}"
             asyncio.create_task(
                 _safe_extract_facts(user.id, conversation_snippet)
@@ -323,18 +327,9 @@ async def process_incoming_message(payload: dict[str, Any]) -> None:
                     "Hmm, something went wrong on my end. Give me a moment and try again? 🔧",
                 )
             except Exception:
-                logger.error("Failed to send error message to %s", phone_number)
+                logger.error("Failed to send error message to %s", phone_redacted)
 
 
-# ── Safe Background Tasks ─────────────────────────────────────────────────────
-
-
-async def _safe_mark_read(message_id: str) -> None:
-    """Fire-and-forget read receipt."""
-    try:
-        await mark_as_read(message_id)
-    except Exception:
-        pass
 
 
 async def _safe_extract_facts(user_id: uuid.UUID, conversation_text: str) -> None:

@@ -14,6 +14,7 @@ Uses the google-genai SDK (v2+).
 import json
 import logging
 import uuid
+from typing import Any
 
 from google import genai
 from google.genai import types
@@ -58,11 +59,13 @@ SYSTEM_PROMPT = """You are Orbit — a seasoned engineering PM and co-developer.
 
 ## Your Capabilities
 You have tools to manage projects, tasks, reminders, and profile settings. USE THEM, never fabricate project data from memory. Always call the appropriate tool to get real data.
+- Project and Task IDs are provided directly in the "=== ACTIVE PROJECTS & TASKS ===" context. Use these real IDs when calling tools.
+- Tools also accept project names and task titles if you don't have the exact ID.
 
 ## Rules
-1. NEVER make up project IDs, task IDs, or other data. Always use tools to query real state.
+1. NEVER make up project IDs, task IDs, or other data. Use the real IDs from your context or pass the name/title.
 2. When a user mentions a new project, create it using the create_project tool.
-3. When listing tasks or projects, always use the appropriate tool, don't guess.
+3. When asked to clean up, deduplicate, or modify tasks, verify the actual tasks before acting. Never claim you removed or resolved duplicates unless duplicate items actually existed in the task list.
 4. Keep responses WhatsApp-friendly: no markdown tables, no code blocks unless specifically asked. Use emojis sparingly but naturally.
 5. If the user sends a voice note transcription, treat it as regular text, they're just talking to you hands-free.
 6. When a user uploads a document, acknowledge that you've ingested it and offer to answer questions about it.
@@ -90,6 +93,7 @@ async def run_agent_loop(
     user_id: uuid.UUID,
     user_message: str,
     db: AsyncSession,
+    user: Any | None = None,
 ) -> str:
     """
     Execute the full agentic loop:
@@ -99,6 +103,7 @@ async def run_agent_loop(
         user_id: UUID of the user.
         user_message: The user's message text.
         db: Active database session.
+        user: Optional pre-loaded User object to avoid re-querying.
 
     Returns:
         Final assistant response text (may contain ||| delimiters).
@@ -106,7 +111,7 @@ async def run_agent_loop(
 
     # ── Step 1: Assemble context ──
     conversation_history, injected_context = await assemble_full_context(
-        user_id, user_message, db
+        user_id, user_message, db, user=user
     )
 
     # Build the full system instruction with injected context

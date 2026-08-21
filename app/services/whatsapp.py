@@ -86,34 +86,29 @@ async def send_text_message(phone_number: str, text: str) -> dict:
 # ── Typing indicator ──────────────────────────────────────────────────────────
 
 
-async def send_typing_indicator(phone_number: str) -> None:
+async def send_typing_indicator(phone_number: str, message_id: str) -> None:
     """
     Show 'typing...' status to the user in WhatsApp.
 
-    This uses the messages endpoint with status type.
+    Uses the WhatsApp Cloud API typing indicator, which is coupled with
+    marking the inbound message as read. Requires the inbound message_id.
+    Auto-expires after ~25 seconds or when a message is sent.
     """
     client = _get_client()
-    payload = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": phone_number,
-        "type": "reaction",
-    }
-
-    # WhatsApp Cloud API doesn't have a direct "typing" endpoint.
-    # We simulate presence by using the read receipts / marking as read.
-    # The actual typing indicator is triggered naturally when we send
-    # messages in quick succession. We'll use a status update instead.
     try:
-        # Mark messages as read to show blue ticks (simulates attention)
-        await client.post(
+        resp = await client.post(
             f"{settings.whatsapp_api_url}/messages",
             json={
                 "messaging_product": "whatsapp",
                 "status": "read",
-                "message_id": "placeholder",
+                "message_id": message_id,
+                "typing_indicator": {
+                    "type": "text",
+                },
             },
         )
+        if resp.status_code >= 400:
+            logger.debug("Typing indicator failed [%s]: %s", resp.status_code, resp.text)
     except Exception:
         # Non-critical — don't block message delivery if this fails
         pass
