@@ -126,7 +126,8 @@ async def receive_webhook(
     if has_messages:
         # Dispatch to background — this is the key to <50ms response
         background_tasks.add_task(process_incoming_message, payload)
-        logger.info("Dispatched message %s to background", message_id)
+        msg_short = message_id[-8:] if message_id else "unknown"
+        logger.info("Dispatched message ...%s to background", msg_short)
     else:
         # Status updates, read receipts, etc. — acknowledge but don't process
         logger.debug("Non-message webhook event — acknowledged")
