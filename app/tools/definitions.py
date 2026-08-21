@@ -263,6 +263,109 @@ TOOL_DECLARATIONS = [
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  Helper Resolvers (Resilient ID and Name Resolution)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def _resolve_project_id(
+    identifier: str | None,
+    user_id: uuid.UUID,
+    db: AsyncSession,
+) -> uuid.UUID | None:
+    """
+    Resolve a project UUID from a UUID string, project name, or default active project.
+    Never throws an exception on bad input.
+    """
+    if not identifier:
+        result = await db.execute(
+            select(Project.id).where(and_(Project.user_id == user_id, Project.status == "active"))
+        )
+        active_projects = result.scalars().all()
+        return active_projects[0] if len(active_projects) == 1 else None
+
+    # 1. Try parsing as direct UUID
+    try:
+        parsed_uuid = uuid.UUID(identifier.strip())
+        result = await db.execute(
+            select(Project.id).where(and_(Project.id == parsed_uuid, Project.user_id == user_id))
+        )
+        if result.scalar_one_or_none():
+            return parsed_uuid
+    except (ValueError, AttributeError):
+        pass
+
+    # 2. Try exact or partial name match
+    cleaned = identifier.strip().replace("_", " ").replace("-", " ")
+    for suffix in ["uuid placeholder", "placeholder", "uuid", "id"]:
+        if cleaned.lower().endswith(suffix):
+            cleaned = cleaned[: -len(suffix)].strip()
+
+    if cleaned:
+        result = await db.execute(
+            select(Project.id).where(
+                and_(
+                    Project.user_id == user_id,
+                    Project.name.ilike(f"%{cleaned}%"),
+                )
+            )
+        )
+        matching = result.scalars().all()
+        if matching:
+            return matching[0]
+
+    # 3. Fallback: if user has only 1 active project, default to it
+    result = await db.execute(
+        select(Project.id).where(and_(Project.user_id == user_id, Project.status == "active"))
+    )
+    active_projects = result.scalars().all()
+    if len(active_projects) == 1:
+        return active_projects[0]
+
+    return None
+
+
+async def _resolve_task(
+    identifier: str,
+    user_id: uuid.UUID,
+    db: AsyncSession,
+) -> Task | None:
+    """
+    Resolve a Task from a UUID string or task title.
+    Never throws an exception on bad input.
+    """
+    if not identifier:
+        return None
+
+    # 1. Try parsing as direct UUID
+    try:
+        parsed_uuid = uuid.UUID(identifier.strip())
+        result = await db.execute(
+            select(Task).where(and_(Task.id == parsed_uuid, Task.user_id == user_id))
+        )
+        task = result.scalar_one_or_none()
+        if task:
+            return task
+    except (ValueError, AttributeError):
+        pass
+
+    # 2. Try partial title match
+    cleaned = identifier.strip()
+    result = await db.execute(
+        select(Task).where(
+            and_(
+                Task.user_id == user_id,
+                Task.title.ilike(f"%{cleaned}%"),
+            )
+        ).order_by(Task.created_at.desc())
+    )
+    matching = result.scalars().all()
+    if matching:
+        return matching[0]
+
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  Handler Functions — safe async DB operations
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -296,7 +399,7 @@ async def handle_create_project(
         "project_id": str(project.id),
         "name": validated.name,
         "client_name": validated.client_name,
-        "message": f"Project '{validated.name}' created successfully.",
+        "message": f"Project '{validated.name}' created successfully (ID: {project.id}).",
     }
 
 
@@ -305,7 +408,13 @@ async def handle_update_project_profile(
 ) -> dict[str, Any]:
     """Update a project's profile fields."""
     validated = UpdateProjectProfileArgs(**args)
-    project_id = uuid.UUID(validated.project_id)
+    project_id = await _resolve_project_id(validated.project_id, user_id, db)
+
+    if not project_id:
+        return {
+            "status": "error",
+            "message": f"Could not find project '{validated.project_id}'. Use list_projects to see active projects.",
+        }
 
     result = await db.execute(
         select(ProjectProfile).where(ProjectProfile.project_id == project_id)
@@ -313,24 +422,32 @@ async def handle_update_project_profile(
     profile = result.scalar_one_or_none()
 
     if not profile:
-        return {"status": "error", "message": f"No profile found for project {validated.project_id}"}
-
-    if validated.tech_stack is not None:
-        profile.tech_stack = validated.tech_stack
-    if validated.repo_url is not None:
-        profile.repo_url = validated.repo_url
-    if validated.deployment_target is not None:
-        profile.deployment_target = validated.deployment_target
-    if validated.client_quirks is not None:
-        profile.client_quirks = validated.client_quirks
-    if validated.primary_goal is not None:
-        profile.primary_goal = validated.primary_goal
+        profile = ProjectProfile(
+            project_id=project_id,
+            tech_stack=validated.tech_stack or [],
+            repo_url=validated.repo_url,
+            deployment_target=validated.deployment_target,
+            client_quirks=validated.client_quirks,
+            primary_goal=validated.primary_goal,
+        )
+        db.add(profile)
+    else:
+        if validated.tech_stack is not None:
+            profile.tech_stack = validated.tech_stack
+        if validated.repo_url is not None:
+            profile.repo_url = validated.repo_url
+        if validated.deployment_target is not None:
+            profile.deployment_target = validated.deployment_target
+        if validated.client_quirks is not None:
+            profile.client_quirks = validated.client_quirks
+        if validated.primary_goal is not None:
+            profile.primary_goal = validated.primary_goal
 
     await db.commit()
 
     return {
         "status": "updated",
-        "project_id": validated.project_id,
+        "project_id": str(project_id),
         "message": "Project profile updated.",
     }
 
@@ -340,6 +457,13 @@ async def handle_create_task(
 ) -> dict[str, Any]:
     """Create a task under a project."""
     validated = CreateTaskArgs(**args)
+    project_id = await _resolve_project_id(validated.project_id, user_id, db)
+
+    if not project_id:
+        return {
+            "status": "error",
+            "message": f"Could not find project '{validated.project_id}'. Use list_projects to check project IDs.",
+        }
 
     due_at = None
     if validated.due_at:
@@ -349,7 +473,7 @@ async def handle_create_task(
             return {"status": "error", "message": f"Invalid date format: {validated.due_at}"}
 
     task = Task(
-        project_id=uuid.UUID(validated.project_id),
+        project_id=project_id,
         user_id=user_id,
         title=validated.title,
         priority=validated.priority,
@@ -357,6 +481,7 @@ async def handle_create_task(
     )
     db.add(task)
     await db.commit()
+    await db.refresh(task)
 
     return {
         "status": "created",
@@ -364,7 +489,7 @@ async def handle_create_task(
         "title": validated.title,
         "priority": validated.priority,
         "due_at": validated.due_at,
-        "message": f"Task '{validated.title}' created.",
+        "message": f"Task '{validated.title}' created (ID: {task.id}).",
     }
 
 
@@ -373,13 +498,13 @@ async def handle_update_task_status(
 ) -> dict[str, Any]:
     """Update a task's status and optional blocker reason."""
     validated = UpdateTaskStatusArgs(**args)
-    task_id = uuid.UUID(validated.task_id)
-
-    result = await db.execute(select(Task).where(Task.id == task_id))
-    task = result.scalar_one_or_none()
+    task = await _resolve_task(validated.task_id, user_id, db)
 
     if not task:
-        return {"status": "error", "message": f"Task {validated.task_id} not found."}
+        return {
+            "status": "error",
+            "message": f"Task '{validated.task_id}' not found. Use list_tasks to see existing task IDs.",
+        }
 
     task.status = validated.status
     if validated.status == "blocked" and validated.blocker_reason:
@@ -394,7 +519,7 @@ async def handle_update_task_status(
 
     return {
         "status": "updated",
-        "task_id": validated.task_id,
+        "task_id": str(task.id),
         "new_status": validated.status,
         "message": f"Task '{task.title}' is now {validated.status}.",
     }
@@ -408,7 +533,16 @@ async def handle_list_tasks(
     conditions = [Task.user_id == user_id]
 
     if validated.project_id:
-        conditions.append(Task.project_id == uuid.UUID(validated.project_id))
+        project_id = await _resolve_project_id(validated.project_id, user_id, db)
+        if project_id:
+            conditions.append(Task.project_id == project_id)
+        else:
+            return {
+                "status": "error",
+                "message": f"Could not find project matching '{validated.project_id}'.",
+                "tasks": [],
+            }
+
     if validated.status:
         conditions.append(Task.status == validated.status)
 
@@ -434,6 +568,7 @@ async def handle_list_tasks(
     task_list = [
         {
             "task_id": str(t.id),
+            "project_id": str(t.project_id),
             "title": t.title,
             "status": t.status,
             "priority": t.priority,
@@ -491,7 +626,14 @@ async def handle_query_project_knowledge(
 ) -> dict[str, Any]:
     """Semantic search over project knowledge using pgvector cosine similarity."""
     validated = QueryProjectKnowledgeArgs(**args)
-    project_id = uuid.UUID(validated.project_id)
+    project_id = await _resolve_project_id(validated.project_id, user_id, db)
+
+    if not project_id:
+        return {
+            "status": "error",
+            "message": f"Could not find project '{validated.project_id}'.",
+            "results": [],
+        }
 
     # Generate query embedding with retrieval_query task type
     query_embedding = await generate_embedding(

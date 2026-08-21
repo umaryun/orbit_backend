@@ -100,13 +100,14 @@ class User(Base):
         DateTime(timezone=True), default=_utcnow
     )
 
-    # Relationships
-    projects: Mapped[list["Project"]] = relationship(back_populates="user", lazy="selectin")
+    # Relationships — lazy="noload" to prevent automatic eager-loading cascades.
+    # Context assembly queries these tables explicitly where needed.
+    projects: Mapped[list["Project"]] = relationship(back_populates="user", lazy="noload")
     conversation_logs: Mapped[list["ConversationLog"]] = relationship(
-        back_populates="user", lazy="selectin"
+        back_populates="user", lazy="noload"
     )
     reminders: Mapped[list["Reminder"]] = relationship(
-        back_populates="user", lazy="selectin"
+        back_populates="user", lazy="noload"
     )
 
 
